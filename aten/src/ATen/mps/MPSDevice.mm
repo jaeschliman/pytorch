@@ -1,9 +1,12 @@
 //  Copyright © 2022 Apple Inc.
 
 #include <c10/util/CallOnce.h>
+#include <c10/util/Exception.h>
 
 #include <ATen/mps/MPSDevice.h>
 #include <ATen/mps/IndexKernels.h>
+
+#include <string>
 
 namespace at {
 namespace mps {
@@ -77,12 +80,43 @@ MPSDevice::MPSDevice(): _mtl_device(nil), _mtl_indexing_library(nil)  {
     return;
   }
   NSArray* devices = [MTLCopyAllDevices() autorelease];
+  MTLDevice* preferred = nil;
+  MTLDevice* fallback = nil;
+  
+  auto device_registryID_envar = std::getenv("MPS_MTLDEVICE_REGISTRY_ID");
+  
+  // prefer device with given registryID == MPS_MTLDEVICE_REGISTRY_ID when provided
+  if (device_registryID_envar) {
+    for (unsigned long i = 0 ; i < [devices count] ; i++) {
+      id<MTLDevice>  device = devices[i];    
+      auto registryID = std::to_string(device.registryID);
+      if (strcmp(device_registryID_envar, registryID) == 0) {
+        preferred = device;
+        break;
+      } 
+    }
+  }
+ 
+  if (device_registryID_envar && preferred == nil) {
+    TORCH_WARN(
+        "Unable to find MTLDevice with registryID ",
+        device_registryID_envar,
+        " falling back to first non-low-powered device."
+        );
+  }
+  
   for (unsigned long i = 0 ; i < [devices count] ; i++) {
-    id<MTLDevice>  device = devices[i];
+    id<MTLDevice>  device = devices[i];    
     if(![device isLowPower]) { // exclude Intel GPUs
-      _mtl_device = [device retain];
+      fallback = device;
       break;
     }
+  }
+  
+  if (preferred) {
+    _mtl_device = [preferred retain];
+  } else {
+    _mtl_device = [fallback retain];
   }
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(_mtl_device);
 }
